@@ -1,0 +1,84 @@
+name: Megabox Odyssey Alert
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test_email:
+        description: "Send a Gmail test message only"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: megabox-odyssey-alert
+  cancel-in-progress: false
+
+jobs:
+  check-booking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependency
+        run: pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Check Megabox and send Gmail alert
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+          TEST_EMAIL: ${{ github.event_name == 'workflow_dispatch' && inputs.test_email }}
+
+          TARGET_DATES: "20260827,20260830"
+          BRANCH_NO: "4062"
+          BRANCH_NAME: "송도(트리플스트리트)"
+          AREA_CD: "35"
+          MOVIE_KEYWORDS: "오디세이,The Odyssey,Odyssey"
+
+        run: python monitor.py
+
+      - name: Read result
+        id: result
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          with open("result.json", encoding="utf-8") as f:
+              data = json.load(f)
+          print("status=" + data["status"])
+          print("all_finished=" + str(data.get("all_finished", False)).lower())
+          PY
+
+      - name: Save alert state
+        if: steps.result.outputs.status == 'FOUND'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .alert_state.json
+          git commit -m "Update Megabox alert state" || true
+          git push
+
+      - name: Disable monitor after all target dates are finished
+        if: steps.result.outputs.all_finished == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api \
+            --method PUT \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/megabox-alert.yml/disable"
